@@ -151,7 +151,6 @@ static void handleEsp32Line(const char *line)
   // Check for ping command (e.g. "Kitchen ping", "Kitchen pingx", or "ping")
   if ((fields >= 2 && (strcasecmp(cmd, "ping") == 0 || strcasecmp(cmd, "pingx") == 0)) ||
       (fields == 1 && (strcasecmp(name, "ping") == 0 || strcasecmp(name, "pingx") == 0))) {
-    delay(50);
     sendReplyToBridge("GotPing");
 
     // Local log to USB console
@@ -173,7 +172,6 @@ static void handleEsp32Line(const char *line)
     }
     analogWrite(A0, dacVal);
 
-    delay(50);
     char dacBuf[32];
     snprintf(dacBuf, sizeof(dacBuf), "GotDAC %d", dacVal);
     sendReplyToBridge(dacBuf);
