@@ -1,0 +1,54 @@
+#include <Arduino.h>
+
+// --- Blink Pattern Configuration ---
+// Timings match your original code: 1000ms HIGH, 1000ms LOW, then three 100ms HIGH/LOW pulses
+const uint32_t blinkPattern[] = {1000, 1000, 100, 100, 100, 100, 100, 100};
+const int patternLength = sizeof(blinkPattern) / sizeof(blinkPattern[0]);
+
+int patternIndex = 0;
+unsigned long previousMillis = 0;
+bool ledState = HIGH;
+
+void setup() {
+  // Initialize the LED
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, ledState); // Set initial state
+
+  // Initialize the USB Serial port (Communication with the PC monitor)
+  Serial.begin(9600);
+
+  // Initialize the Hardware UART port (Communication with the ESP32-C6)
+  // On the Trinket M0: RX is Pin 3, TX is Pin 4
+  Serial1.begin(9600);
+}
+
+void loop() {
+  // ---------------------------------------------------------
+  // 1. Non-Blocking Blink Routine
+  // ---------------------------------------------------------
+  unsigned long currentMillis = millis();
+  
+  // Check if it is time to transition to the next state in the pattern
+  if (currentMillis - previousMillis >= blinkPattern[patternIndex]) {
+    previousMillis = currentMillis;                           // Reset the timer
+    patternIndex = (patternIndex + 1) % patternLength;        // Move to next timing duration
+    
+    // Even indices (0, 2, 4...) are HIGH, odd indices (1, 3, 5...) are LOW
+    ledState = (patternIndex % 2 == 0) ? HIGH : LOW; 
+    digitalWrite(LED_BUILTIN, ledState);
+  }
+
+  // ---------------------------------------------------------
+  // 2. Serial Bridge Routine
+  // ---------------------------------------------------------
+  
+  // USB to Hardware: If data comes from the PC monitor, send it to the ESP32-C6
+  if (Serial.available()) {
+    Serial1.write(Serial.read());
+  }
+
+  // Hardware to USB: If data comes from the ESP32-C6, send it to the PC monitor
+  if (Serial1.available()) {
+    Serial.write(Serial1.read());
+  }
+}
