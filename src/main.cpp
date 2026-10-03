@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Adafruit_DotStar.h>
 #include <SPI.h>
+#include "wiring_private.h"
 
 // -----------------------------------------------------------------------------
 // Existing simple blink pattern on LED_BUILTIN
@@ -121,11 +122,10 @@ static void sendReplyToBridge(const char *text) {
   Serial1.println(text);
   Serial1.flush();
 
-  // 2. Also transmit on Pins 1, 0, and 2 in case the physical return wire
-  // is plugged into Pin 1 (standard Arduino TX label) or Pin 0
+  // 2. Also transmit on Pins 0 and 2 as fallback.
+  // Note: Pin 1 (A0 / "1~") is dedicated to the SAMD21 Hardware DAC and must NOT be bit-banged!
   char buf[48];
   snprintf(buf, sizeof(buf), "%s\r\n", text);
-  bitbangTxString(1, buf);
   bitbangTxString(0, buf);
   bitbangTxString(2, buf);
 }
@@ -170,6 +170,7 @@ static void handleEsp32Line(const char *line)
     if (dacVal > 1023) {
       dacVal = 1023;
     }
+    pinPeripheral(A0, PIO_ANALOG);
     analogWrite(A0, dacVal);
 
     char dacBuf[32];
@@ -245,6 +246,7 @@ void setup() {
 
   // Initialize the SAMD21 10-bit true hardware DAC on pin A0 (0..1023 -> 0..3.3V)
   analogWriteResolution(10);
+  pinPeripheral(A0, PIO_ANALOG);
   analogWrite(A0, 0);
 
   // Initialize the USB Serial port (communication with PuTTY / PC).
