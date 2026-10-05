@@ -220,3 +220,35 @@ Follow this checklist to verify your complete setup:
    ```bash
    python test_runner.py --port COM11 --target Kitchen --all
    ```
+
+---
+
+## 8. To Be Done (Future Enhancements & Roadmap)
+
+### 8.1 Channel Agility & Auto-Scanning
+
+#### Context & Motivation
+Once all peripheral drivers, actuators, and communication features are finalized, end-device nodes (Seeed Studio XIAO ESP32-C6) will be physically embedded inside objects, enclosures, and appliances. In these deployed environments:
+- End-devices will not have accessible USB/UART debug ports or physical buttons for manual channel configuration.
+- The Coordinator may be configured on different 2.4 GHz channels (Channels 1–11) to avoid interference from surrounding home/industrial Wi-Fi access points.
+- Therefore, embedded end-devices must have autonomous channel agility to automatically discover, track, and lock onto the Coordinator's current operating frequency without human intervention.
+
+#### Proposed Channel Agility Architecture
+1. **Coordinator Periodic Beacon:**
+   - The Coordinator transmits a lightweight broadcast heartbeat/beacon frame on its active channel at regular intervals (e.g., once every 1–2 seconds) or responds to active discovery probes.
+2. **Autonomous Node Scanning State Machine:**
+   - **Boot & Loss-of-Link Detection:** If an embedded node powers on or loses link connectivity with the Coordinator (e.g., no valid packet received for 10–15 seconds), it transitions into `SCANNING` mode.
+   - **Multi-Channel Sweep:** The node sequentially steps its radio through Wi-Fi Channels 1 through 11 (or 13):
+     ```c
+     esp_wifi_set_channel(scan_channel, WIFI_SECOND_CHAN_NONE);
+     ```
+   - **Dwell & Probe:** The node dwells on each channel for a defined interval (e.g., 200–300 ms) listening for the Coordinator's beacon, or broadcasts a rapid `DISCOVERY_PROBE` frame to `FF:FF:FF:FF:FF:FF`.
+   - **Channel Lock & Join:** Upon receiving a valid beacon or probe-response from the Coordinator, the node locks its radio to that channel, updates its internal peer table, and resumes normal operation.
+3. **NVS Channel Caching:**
+   - When a channel lock is achieved, the node persists the active channel number to Non-Volatile Storage (NVS flash).
+   - On subsequent power cycles, the node first attempts to connect on the cached channel before initiating a full 11-channel sweep, minimizing boot-to-link time to under 50 ms.
+4. **Coordinated Channel Migration:**
+   - If the Coordinator is instructed to shift channels (e.g., via a serial command `SetChannel <new_ch>`), it broadcasts a `CHANNEL_SWITCH_ANNOUNCEMENT <new_ch>` frame with a short countdown.
+   - Active nodes receive this announcement and migrate their radios synchronously with the Coordinator.
+   - Any sleeping or disconnected node that misses the announcement will simply time out and re-acquire the Coordinator via autonomous channel scanning.
+
