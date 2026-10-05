@@ -43,7 +43,13 @@ The wireless transport layer operates entirely on **Espressif ESP-NOW**, complet
 ### 2.1 Why ESP-NOW Replaced Zigbee
 - **Zero Stack Overhead:** Zigbee required hundreds of kilobytes of closed/proprietary Zboss libraries, software cryptographic workarounds, and complex multi-layer APS/ZDO packet wrappers. ESP-NOW communicates directly at the IEEE 802.11 MAC layer.
 - **Ultra-Low Latency:** Packets transmit in **< 1 ms** without routing lookups, route rediscovery delays, or Zigbee beaconing.
-- **Hardware Cryptography:** Eliminating Zboss allowed re-enabling native ESP32-C6 hardware cryptographic acceleration (AES, SHA, MPI).
+- **Hardware Cryptography Restored:** 
+  - *The Zboss Limitation:* Espressif's Zboss Zigbee stack had internal driver contention and locking conflicts with the ESP32-C6 crypto peripherals. To avoid race conditions, Espressif forced `CONFIG_MBEDTLS_HARDWARE_AES=n`, `CONFIG_MBEDTLS_HARDWARE_SHA=n`, and `CONFIG_MBEDTLS_HARDWARE_MPI=n` in `sdkconfig.defaults`, forcing all encryption, hashing, and big-number math into slow, CPU-intensive software emulation.
+  - *The ESP-NOW Benefit:* With Zboss completely removed, the ESP32-C6's native on-chip cryptographic hardware accelerators are fully re-enabled:
+    - **AES Accelerator:** Dedicated silicon for 128-bit and 256-bit symmetric block ciphers with DMA support.
+    - **SHA Accelerator:** Hardware hashing engine supporting SHA-1, SHA-224, and SHA-256 with zero CPU cycle penalty.
+    - **MPI / RSA / ECC Accelerator:** High-performance hardware modular exponentiation engine for multi-precision integers used in asymmetric key exchange and public-key cryptography.
+    - *Result:* Cryptographic routines execute at raw hardware silicon speeds with dramatically reduced CPU load, lower power consumption, and zero driver conflicts.
 - **No Wi-Fi Infrastructure Required:** ESP-NOW transmits standard vendor-specific action frames directly peer-to-peer. No Wi-Fi access point, router, DHCP handshake, or IP configuration is needed.
 
 ### 2.2 Channel & Radio Configuration
