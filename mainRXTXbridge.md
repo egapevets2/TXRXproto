@@ -2,31 +2,33 @@
 
 ## 1. Overview & System Role
 
-The **`TXRXproto`** project (located in `C:\Users\egape\TXRXproto`) serves as the dedicated **Hardware-in-the-Loop (HIL) verification fixture and downstream client** for the Zigbee mesh network. 
+The **`TXRXproto`** project (located in `C:\Users\egape\TXRXproto`) serves as the dedicated **Hardware-in-the-Loop (HIL) verification fixture and downstream client** for the ESP-NOW wireless network. 
 
-Physically wired to the ESP32-C6 node's hardware UART serial bridge, `TXRXproto` provides immediate visual and serial feedback confirming that packets sent from the remote coordinator successfully traverse the wireless Zigbee mesh, get dispatched across the node's serial bridge, and arrive uncorrupted at the end-actuator.
+Physically wired to the ESP32-C6 node's hardware UART serial bridge, `TXRXproto` provides immediate visual and serial feedback confirming that packets sent from the remote Coordinator successfully traverse the wireless ESP-NOW link, get dispatched across the node's serial bridge, and arrive uncorrupted at the downstream actuator.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
 │               PuTTY / Host PC Terminal                 │
 └───────────────────────────┬────────────────────────────┘
-                            │ Serial Console ("Kitchen blinkx 3")
+                            │ Serial Console ("Kitchen blinkx 3") @ 115200 Baud
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │                Coordinator (ESP32-C6)                  │
 └───────────────────────────┬────────────────────────────┘
-                            │ Zigbee 3.0 Mesh (IEEE 802.15.4 / APS 0xFFC0)
+                            │ ESP-NOW Wireless Transport (Wi-Fi 2.4 GHz / Ch 1)
+                            │ 138-byte packed action frames / Sub-millisecond latency
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │                  PNPzigbee (ESP32-C6)                  │
-│                serial_bridge (UART1)                   │
+│            serial_bridge driver (UART1)                │
 └───────────────────────────┬────────────────────────────┘
                             │ Hardware Serial (115200 Baud / 8-N-1)
+                            │ GPIO 17 (TX) / GPIO 16 (RX)
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │                TXRXproto (SAMD21 / M0)                 │
 │   • Built-in LED Heartbeat (4 blinks + pause)          │
-│   • DotStar Blue 'blinkx' LED                          │
+│   • DotStar Blue 'blinkx' LED (APA102)                 │
 │   • Hardware 10-bit DAC Output (Pin A0)                │
 │   • Bi-directional Serial Echo / Ping Engine           │
 └────────────────────────────────────────────────────────┘
@@ -34,7 +36,65 @@ Physically wired to the ESP32-C6 node's hardware UART serial bridge, `TXRXproto`
 
 ---
 
-## 2. Hardware & Platform Specifications
+## 2. ESP-NOW Wireless Protocol Architecture
+
+The wireless transport layer operates entirely on **Espressif ESP-NOW**, completely replacing legacy Zigbee 3.0 / Zboss libraries. This transition eliminates massive stack overhead, removes joining delays, and drastically improves packet speed and reliability.
+
+### 2.1 Why ESP-NOW Replaced Zigbee
+- **Zero Stack Overhead:** Zigbee required hundreds of kilobytes of closed/proprietary Zboss libraries, software cryptographic workarounds, and complex multi-layer APS/ZDO packet wrappers. ESP-NOW communicates directly at the IEEE 802.11 MAC layer.
+- **Ultra-Low Latency:** Packets transmit in **< 1 ms** without routing lookups, route rediscovery delays, or Zigbee beaconing.
+- **Hardware Cryptography:** Eliminating Zboss allowed re-enabling native ESP32-C6 hardware cryptographic acceleration (AES, SHA, MPI).
+- **No Wi-Fi Infrastructure Required:** ESP-NOW transmits standard vendor-specific action frames directly peer-to-peer. No Wi-Fi access point, router, DHCP handshake, or IP configuration is needed.
+
+### 2.2 Channel & Radio Configuration
+- **Frequency Band:** 2.4 GHz Wi-Fi.
+- **Operating Channel:** Fixed to **Channel 1** (`ESPNOW_WIFI_CHANNEL = 1`, `WIFI_SECOND_CHAN_NONE`).
+- **Wi-Fi Mode:** Station Mode (`WIFI_MODE_STA`) with power-save disabled (`WIFI_PS_NONE`) for maximum responsiveness.
+- **Protocol Flags:** 802.11b/g/n enabled.
+
+### 2.3 Frame Structure (`espnow_frame_t`)
+All wireless messages share a unified, 138-byte packed structure (`espnow_frame_t`) guaranteeing binary interoperability between the Coordinator and all remote nodes:
+
+```c
+#define MESH_TEXT_LEN 18
+#define MESH_LINE_LEN 80
+
+typedef struct __attribute__((packed))
+{
+    char source[MESH_TEXT_LEN];   // Origin node name (e.g. "coordinator", "Kitchen")
+    char target[MESH_TEXT_LEN];   // Target destination node name (e.g. "Kitchen")
+    char cmd[MESH_TEXT_LEN];      // Command verb (e.g. "blink", "SetupSerialBridge")
+    int16_t value;                // Primary numeric parameter
+    int16_t value2;               // Secondary numeric parameter
+    char text[MESH_LINE_LEN];     // Raw text line or return reply string
+} espnow_frame_t;
+```
+
+### 2.4 Addressing & Peer Discovery
+- **Unicast Addressing:** Packets are transmitted directly to the node's 6-byte IEEE 802.3 MAC address:
+  - **Coordinator (ESP32-C6 DevKit):** `B4:3A:45:8A:C7:18`
+  - **Kitchen Node (Seeed XIAO ESP32-C6):** `B4:3A:45:8A:C6:40`
+- **Dynamic Peer Addition:** When the Coordinator dispatches to a target, it checks `esp_now_is_peer_exist()` and automatically registers the peer (`esp_now_add_peer`) on Channel 1 without user intervention.
+- **Coordinator Auto-Learning:** Remote nodes automatically record the Coordinator's MAC address from the first frame received and direct all upstream responses back to that MAC.
+- **Broadcast Fallback:** The broadcast address `FF:FF:FF:FF:FF:FF` is used for discovery sweeps (`PingNetwork`) or unlisted devices.
+
+### 2.5 Link Quality Assessment (RSSI to LQI Mapping)
+Every received packet extracts physical RSSI (dBm) from the hardware `rx_ctrl->rssi` header and calculates an equivalent Link Quality Indicator (0–255 LQI):
+
+$$\text{LQI} = \text{clamp}\left(\frac{(\text{RSSI} + 100) \times 255}{70},\ 0,\ 255\right)$$
+
+- When a node receives a `PING`, it measures local LQI and replies with:
+  `PONG LQI=<remote_lqi>`
+- The Coordinator records both local incoming LQI and the remote reported LQI, providing true bidirectional link quality in `GiveNetworkReport`.
+
+### 2.6 Seeed Studio XIAO ESP32-C6 RF Switch Control
+The Seeed Studio XIAO ESP32-C6 hardware includes an onboard RF multiplexer switch that requires explicit GPIO initialization before 2.4 GHz transmission can occur:
+- **GPIO 3:** RF Switch Power Enable (Active-LOW). Must be driven `0` (LOW) to power the RF switch.
+- **GPIO 14:** Antenna Path Select. Must be driven `0` (LOW) to select the onboard ceramic antenna (`1` selects external U.FL).
+
+---
+
+## 3. Hardware & Platform Specifications
 
 | Parameter | Specification | Notes |
 | :--- | :--- | :--- |
@@ -47,7 +107,7 @@ Physically wired to the ESP32-C6 node's hardware UART serial bridge, `TXRXproto`
 
 ---
 
-## 3. Physical Wiring Reference
+## 4. Physical Wiring Reference
 
 Connect the ESP32-C6 node to the Arduino test fixture as follows:
 
@@ -60,48 +120,48 @@ Connect the ESP32-C6 node to the Arduino test fixture as follows:
 
 ---
 
-## 4. Complete Coordinator Command Reference
+## 5. Complete Coordinator Command Reference
 
 All commands are typed directly into the Coordinator serial console (PuTTY or Python `test_runner.py` @ 115200 baud).
 
-### 4.1 Coordinator Network Management Commands
-These commands manage the Zigbee mesh itself and do not require a device prefix:
+### 5.1 Coordinator Network Management Commands
+These commands manage the ESP-NOW network table and do not require a device prefix:
 
 | Command | Parameters | Description | Example Coordinator Output |
 | :--- | :--- | :--- | :--- |
-| **`GiveNetworkReport`** | *none* | Initiates a live RF survey. Pings all online nodes, queries local and remote LQI, and outputs a formatted status table. | `Kitchen,0xB43A...,0x86A1,1,END_DEVICE,51,48,OK,4,NO` |
-| **`PingNetwork`** | *none* | Broadcasts a `PING` to all known devices in the network table to measure link latency and LQI. | `PING Kitchen SENT SHORT=0x86A1` |
-| **`ResetNetwork`** | *none* | Re-opens the Zigbee 3.0 permit-joining window for **180 seconds** (`esp_zb_bdb_open_network(180)`) and restarts multi-pass active discovery for known IEEE addresses. | `RESET_NETWORK_BEGIN`<br>`RESET_NETWORK_END` |
+| **`GiveNetworkReport`** | *none* | Initiates a live RF survey. Pings all devices in the table, awaits PONG with remote LQI, and outputs a formatted status table. | `Kitchen,0xB43A...,0x0001,1,END_DEVICE,153,174,OK,2,YES` |
+| **`PingNetwork`** | *none* | Dispatches a `PING` frame to all nodes registered in the static table to assess connectivity. | `PING Kitchen SENT SHORT=0x0001` |
+| **`ResetNetwork`** | *none* | Clears cached link health and forces an immediate discovery ping sweep across all nodes. | `RESET_NETWORK_BEGIN`<br>`RESET_NETWORK_END` |
 | **`ResetCoordinator`** | *none* | Performs a software restart (`esp_restart()`) of the Coordinator board. | `RESET_COORDINATOR_RESTARTING` |
 
 ---
 
-### 4.2 Node Direct Commands (ESP32-C6 Local)
-Format: `<TargetName> <Command> [Parameters]` *(e.g. `Kitchen blink 5`)*
+### 5.2 Node Direct Commands (ESP32-C6 Local)
+Format: `<TargetName> <Command> [Parameters]` *(e.g. `Kitchen blink 3`)*
 
 | Command | Parameters | Description | Node Action / Response |
 | :--- | :--- | :--- | :--- |
-| **`<TargetName> PING`** | *none* | Direct RF link test to a specific node. | Node measures signal quality and replies: `< <TargetName>: PONG LQI=<val>` |
+| **`<TargetName> PING`** | *none* | Direct RF link test to a specific node. | Node measures signal quality and replies: `< <TargetName>: [PONG LQI=<val> REMOTE_LQI=<val>]` |
 | **`<TargetName> SetupSerialBridge`** | *none* | **Required prerequisite before downstream fixture testing.** Initializes UART1 (`GPIO 17 TX` / `GPIO 16 RX` @ 115200 baud) on the ESP32-C6. | ESP32-C6 installs UART driver and starts bridge task. Coordinator receives: `< <TargetName>: SETUP SERIAL OK` |
-| **`<TargetName> blink [count] [ms]`** | `count` (1-20), `ms` (delay) | Blinks the ESP32-C6 **onboard status LED**. | ESP32-C6 toggles local onboard LED directly. |
-| **`<TargetName> on`** | *none* | Standard Zigbee On/Off cluster ON. | Node responds: `< <TargetName>: GOT ON OK` |
-| **`<TargetName> off`** | *none* | Standard Zigbee On/Off cluster OFF. | Node responds: `< <TargetName>: GOT OFF OK` |
+| **`<TargetName> blink [count] [ms]`** | `count` (1–20), `ms` (delay) | Blinks the ESP32-C6 **onboard status LED**. | ESP32-C6 toggles local onboard LED directly. |
+| **`<TargetName> on`** | *none* | Turns on local default light output. | Node responds: `< <TargetName>: GOT ON OK` |
+| **`<TargetName> off`** | *none* | Turns off local default light output. | Node responds: `< <TargetName>: GOT OFF OK` |
 
 ---
 
-### 4.3 Downstream Fixture Commands (Wired Arduino / `TXRXproto`)
-These commands traverse: **PC &rarr; Coordinator &rarr; Zigbee Over-The-Air &rarr; ESP32-C6 &rarr; UART1 &rarr; Arduino**.  
+### 5.3 Downstream Fixture Commands (Wired Arduino / `TXRXproto`)
+These commands traverse: **PC &rarr; Coordinator &rarr; ESP-NOW Wireless &rarr; ESP32-C6 &rarr; UART1 &rarr; Arduino**.  
 *(Note: Always run `<TargetName> SetupSerialBridge` first so the UART bridge is active).*
 
 | Command | Parameters | Downstream Action on Arduino | Expected Feedback / Confirmation |
 | :--- | :--- | :--- | :--- |
 | **`<TargetName> blinkx [count]`** | `count` (1–50, default 1) | Blinks the Arduino's onboard **DotStar addressable RGB LED** in **Blue** (`0x0000FF`) at 200ms cadence. | Arduino pulses Blue DotStar LED. Upstream terminal prints: `[Arduino] blinkx <count>`. |
-| **`<TargetName> ping`** | *none* | **Full two-way loop verification.** Arduino receives `ping` on `Serial1` and immediately replies with `GotPing\r\n`. | ESP32-C6 forwards `GotPing` via Zigbee APS message back to Coordinator. Console displays: `< <TargetName>: GotPing`. |
+| **`<TargetName> ping`** | *none* | **Full two-way loop verification.** Arduino receives `ping` on `Serial1` and immediately replies with `GotPing\r\n`. | ESP32-C6 forwards `GotPing` via ESP-NOW frame back to Coordinator. Console displays: `< <TargetName>: GotPing`. |
 | **`<TargetName> setDAC <value>`** | `value` (0–1023) | Sets the hardware DAC on Arduino pin **`A0`** ($0\text{V} = 0$, $3.3\text{V} = 1023$). | Arduino sets pin `A0` and replies `GotDAC <value>`. Console displays: `< <TargetName>: GotDAC <value>`. |
 
 ---
 
-## 5. Visual Status Indicators on the Arduino
+## 6. Visual Status Indicators on the Arduino
 
 The Arduino fixture provides two completely independent visual feedback mechanisms:
 
@@ -118,18 +178,18 @@ The Arduino fixture provides two completely independent visual feedback mechanis
 │   (4 blinks + pause)     │                             │
 ├──────────────────────────┼─────────────────────────────┤
 │   Indicates:             │   Indicates:                │
-│   SAMD21 Core Liveness   │   Successful Zigbee         │
+│   SAMD21 Core Liveness   │   Successful ESP-NOW        │
 │   (Normal background)    │   'blinkx' Command Received │
 └──────────────────────────┴─────────────────────────────┘
 ```
 
 ---
 
-## 6. End-to-End Verification Procedure
+## 7. End-to-End Verification Procedure
 
 Follow this checklist to verify your complete setup:
 
-1. **Open Coordinator Terminal:** Connect to the Coordinator COM port at 115200 baud.
+1. **Open Coordinator Terminal:** Connect to the Coordinator COM port at 115200 baud (or use `test_runner.py`).
 2. **Verify RF Connectivity:**
    ```text
    GiveNetworkReport
@@ -155,3 +215,8 @@ Follow this checklist to verify your complete setup:
    Kitchen setDAC 512
    ```
    *Expected response:* `< Kitchen: GotDAC 512` *(pin A0 outputs ~1.65V)*.
+7. **Automated Regression Suite:**
+   Run the test runner from `c:\Users\egape\ZigbeeTestRunner`:
+   ```bash
+   python test_runner.py --port COM11 --target Kitchen --all
+   ```
