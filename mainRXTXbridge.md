@@ -164,6 +164,8 @@ These commands traverse: **PC &rarr; Coordinator &rarr; ESP-NOW Wireless &rarr; 
 | **`<TargetName> blinkx [count]`** | `count` (1–50, default 1) | Blinks the Arduino's onboard **DotStar addressable RGB LED** in **Blue** (`0x0000FF`) at 200ms cadence. | Arduino pulses Blue DotStar LED. Upstream terminal prints: `[Arduino] blinkx <count>`. |
 | **`<TargetName> ping`** | *none* | **Full two-way loop verification.** Arduino receives `ping` on `Serial1` and immediately replies with `GotPing\r\n`. | ESP32-C6 forwards `GotPing` via ESP-NOW frame back to Coordinator. Console displays: `< <TargetName>: GotPing`. |
 | **`<TargetName> setDAC <value>`** | `value` (0–1023) | Sets the hardware DAC on Arduino pin **`A0`** ($0\text{V} = 0$, $3.3\text{V} = 1023$). | Arduino sets pin `A0` and replies `GotDAC <value>`. Console displays: `< <TargetName>: GotDAC <value>`. |
+| **`<TargetName> setx`** | *none* | Sets digital pin **`D0`** to logic **HIGH** (3.3V). | Arduino drives pin `D0` HIGH and replies `GotSetx`. Console displays: `< <TargetName>: GotSetx`. |
+| **`<TargetName> clrx`** | *none* | Clears digital pin **`D0`** to logic **LOW** (0.0V). | Arduino drives pin `D0` LOW and replies `GotClrx`. Console displays: `< <TargetName>: GotClrx`. |
 
 ---
 
@@ -221,7 +223,16 @@ Follow this checklist to verify your complete setup:
    Kitchen setDAC 512
    ```
    *Expected response:* `< Kitchen: GotDAC 512` *(pin A0 outputs ~1.65V)*.
-7. **Automated Regression Suite:**
+7. **Test Digital Pin Control (D0):**
+   ```text
+   Kitchen setx
+   ```
+   *Expected response:* `< Kitchen: GotSetx` *(pin D0 driven HIGH, ~3.3V)*.
+   ```text
+   Kitchen clrx
+   ```
+   *Expected response:* `< Kitchen: GotClrx` *(pin D0 driven LOW, 0.0V)*.
+8. **Automated Regression Suite:**
    Run the test runner from `c:\Users\egape\ZigbeeTestRunner`:
    ```bash
    python test_runner.py --port COM11 --target Kitchen --all

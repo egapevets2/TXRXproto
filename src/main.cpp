@@ -45,6 +45,13 @@ const uint32_t blinkxOnMs = 200;
 const uint32_t blinkxOffMs = 200;
 
 // -----------------------------------------------------------------------------
+// Digital output pin D0 for setx / clrx
+// -----------------------------------------------------------------------------
+#ifndef PIN_D0
+#define PIN_D0 0
+#endif
+
+// -----------------------------------------------------------------------------
 // Incoming line parser for ESP32-C6 -> Arduino direction
 // -----------------------------------------------------------------------------
 
@@ -122,11 +129,11 @@ static void sendReplyToBridge(const char *text) {
   Serial1.println(text);
   Serial1.flush();
 
-  // 2. Also transmit on Pins 0 and 2 as fallback.
+  // 2. Also transmit on Pin 2 as fallback.
   // Note: Pin 1 (A0 / "1~") is dedicated to the SAMD21 Hardware DAC and must NOT be bit-banged!
+  // Note: Pin 0 (D0) is dedicated to GPIO output (setx/clrx) and must NOT be bit-banged!
   char buf[48];
   snprintf(buf, sizeof(buf), "%s\r\n", text);
-  bitbangTxString(0, buf);
   bitbangTxString(2, buf);
 }
 
@@ -204,6 +211,32 @@ static void handleEsp32Line(const char *line)
     startBlinkx(blinkCount);
     return;
   }
+
+  // Check for setx command (e.g. "Kitchen setx" or "setx")
+  if ((fields >= 2 && strcasecmp(cmd, "setx") == 0) ||
+      (fields >= 1 && strcasecmp(name, "setx") == 0)) {
+    pinMode(PIN_D0, OUTPUT);
+    digitalWrite(PIN_D0, HIGH);
+
+    sendReplyToBridge("GotSetx");
+
+    // Local debug print to USB console
+    Serial.println("[Arduino] setx -> D0 set HIGH");
+    return;
+  }
+
+  // Check for clrx command (e.g. "Kitchen clrx" or "clrx")
+  if ((fields >= 2 && strcasecmp(cmd, "clrx") == 0) ||
+      (fields >= 1 && strcasecmp(name, "clrx") == 0)) {
+    pinMode(PIN_D0, OUTPUT);
+    digitalWrite(PIN_D0, LOW);
+
+    sendReplyToBridge("GotClrx");
+
+    // Local debug print to USB console
+    Serial.println("[Arduino] clrx -> D0 cleared LOW");
+    return;
+  }
 }
 
 static void processEsp32Byte(char ch)
@@ -248,6 +281,10 @@ void setup() {
   analogWriteResolution(10);
   pinPeripheral(A0, PIO_ANALOG);
   analogWrite(A0, 0);
+
+  // Initialize D0 pin as digital output (default LOW)
+  pinMode(PIN_D0, OUTPUT);
+  digitalWrite(PIN_D0, LOW);
 
   // Initialize the USB Serial port (communication with PuTTY / PC).
   Serial.begin(9600);
